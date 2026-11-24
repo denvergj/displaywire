@@ -89,8 +89,10 @@ const DEFAULT_MIC_DEVICE: &str = "BlackHole";
 #[derive(Parser, Clone)]
 #[command(about = "Stream this machine's screen to a displaywire client")]
 pub struct Cli {
-    #[arg(long, default_value_t = 9000)]
-    port: u16,
+    /// UDP port (default 9000, or the number in a `port` file in the data folder, which outlasts
+    /// however the server is started).
+    #[arg(long)]
+    port: Option<u16>,
     /// Target frame rate (the encoder's rate-control assumption; capture follows the display).
     #[arg(long, default_value_t = 120)]
     pub fps: u32,
@@ -572,7 +574,8 @@ fn run(cli: Cli) -> Result<(), String> {
         None => open_screen(&cli, 0, None)?,
     };
 
-    let sock = udp_socket(SocketAddr::from(([0, 0, 0, 0], cli.port))).map_err(|e| format!("bind udp/{}: {e}", cli.port))?;
+    let port = cli.port.or_else(|| std::fs::read_to_string(data_dir.join("port")).ok()?.trim().parse().ok()).unwrap_or(9000);
+    let sock = udp_socket(SocketAddr::from(([0, 0, 0, 0], port))).map_err(|e| format!("bind udp/{port}: {e}"))?;
     let shared = Arc::new(Shared::new(store, pairing::Pairing::new(&server_name)));
     shared.fec_percent.store(cli.fec.min(proto::stream::Settings::MAX_FEC_PERCENT as u32) as u8, Relaxed);
     shared.bitrate_kbps.store((cli.mbps * 1000.0) as u32, Relaxed);
@@ -586,7 +589,7 @@ fn run(cli: Cli) -> Result<(), String> {
         let sock = sock.try_clone().map_err(|e| e.to_string())?;
         let shared = shared.clone();
         let announcement = (!cli.no_discovery).then(|| proto::discover::Announcement {
-            port: cli.port,
+            port,
             version: VERSION,
             address: None,
             name: server_name.clone(),
@@ -629,7 +632,7 @@ fn run(cli: Cli) -> Result<(), String> {
             audio::spawn(sock.try_clone().map_err(|e| e.to_string())?, shared.clone(), source);
         }
     }
-    println!("displaywire-server on udp/{}, waiting for a client", cli.port);
+    println!("displaywire-server on udp/{port}, waiting for a client");
     let main = shared.stream(0).ok_or("no main stream")?;
     let pace = 8e3 / cli.pace_mbps;
     #[cfg(target_os = "macos")]

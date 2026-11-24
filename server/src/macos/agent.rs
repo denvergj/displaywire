@@ -57,10 +57,12 @@ pub fn first_launch() -> bool {
         super::setup::open();
         return true;
     }
+    // Whatever the old one was started with (a port, a bitrate) carries over.
+    let args = previous_args();
     if installed() {
         let _ = uninstall(false);
     }
-    match install(&[], true) {
+    match install(&args, true) {
         Ok(()) => true,
         Err(e) => {
             eprintln!("start at login: {e}; running here instead");
@@ -71,6 +73,35 @@ pub fn first_launch() -> bool {
 
 unsafe extern "C" {
     fn getuid() -> u32;
+}
+
+/// The options the installed LaunchAgent starts the server with (not the program or `--run`).
+fn previous_args() -> Vec<std::ffi::OsString> {
+    let Ok(path) = plist_path() else { return Vec::new() };
+    let Ok(out) = Command::new("/usr/bin/plutil").args(["-extract", "ProgramArguments", "json", "-o", "-"]).arg(&path).output() else { return Vec::new() };
+    let text = String::from_utf8_lossy(&out.stdout);
+    // A JSON array of strings, as plutil prints it.
+    let mut args = Vec::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut s = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => break,
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        s.push(if n == '/' { '/' } else { n });
+                    }
+                }
+                c => s.push(c),
+            }
+        }
+        args.push(s);
+    }
+    args.into_iter().skip(1).filter(|a| a != "--run").map(Into::into).collect()
 }
 
 pub fn running_as_agent() -> bool {
